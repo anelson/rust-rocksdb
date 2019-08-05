@@ -1,3 +1,7 @@
+# IMPORTANT
+
+This is my personal fork, don't use it.  Instead use the [official version](https://github.com/rust-rocksdb/rust-rocksdb)
+
 rust-rocksdb
 ============
 [![Build Status](https://travis-ci.org/rust-rocksdb/rust-rocksdb.svg?branch=master)](https://travis-ci.org/rust-rocksdb/rust-rocksdb)
