@@ -54,11 +54,17 @@
 //! ```
 //!
 
+// Needed to support the cpp! macro
+#![recursion_limit="128"]
+
 extern crate libc;
 extern crate librocksdb_sys as ffi;
 
 #[macro_use]
 mod ffi_util;
+
+#[macro_use]
+extern crate cpp;
 
 pub mod backup;
 pub mod checkpoint;

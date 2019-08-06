@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::mem;
 use std::path::Path;
@@ -137,7 +138,67 @@ impl Default for BlockBasedOptions {
     }
 }
 
+cpp! {{
+            #include <rocksdb/options.h>
+            #include <rocksdb/convenience.h>
+}}
+
 impl Options {
+    pub fn from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+        map: &HashMap<K, V>,
+    ) -> Result<Options, crate::Error> {
+        //Need to make the map into separate arrays of keys and values which will be easier
+        //to put into an STL unordered map.
+        let mut keys = Vec::<CString>::with_capacity(map.len());
+        let mut values = Vec::<CString>::with_capacity(map.len());
+
+        for (key, value) in map.iter() {
+            keys.push(CString::new(key.as_ref()).expect("invalid key"));
+            values.push(CString::new(value.as_ref()).expect("invalid value"));
+        }
+
+        let keys_ptrs: Vec<_> = keys.iter().map(|key| key.as_ptr()).collect();
+        let values_ptrs: Vec<_> = values.iter().map(|value| value.as_ptr()).collect();
+
+        let options = Options::default();
+        let options_ptr = options.inner;
+        let new_options = Options::default();
+        let new_options_ptr = new_options.inner;
+
+        let keys_ptr = keys_ptrs.as_ptr();
+        let values_ptr = values_ptrs.as_ptr();
+        let len = map.len();
+
+        let err = unsafe {
+            cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", keys_ptr as "const char**", values_ptr as "const char**", len as "size_t"] -> *mut ::libc::c_char as "const char*" {
+                auto map = std::unordered_map<std::string, std::string>();
+
+                for (size_t i = 0; i < len; i++) {
+                    map.insert(std::pair<std::string, std::string>(std::string(keys_ptr[i]), std::string(values_ptr[i])));
+                }
+
+                auto status = rocksdb::GetDBOptionsFromMap(*options_ptr,
+                                                           map,
+                                                           new_options_ptr);
+
+                if (status.ok()) {
+                    return nullptr;
+                } else {
+                    return strdup(status.getState());
+                }
+                return nullptr;
+            })
+        };
+
+        if err.is_null() {
+            //Success
+            Ok(new_options)
+        } else {
+            //Failed miserably
+            return Err(crate::Error::new(crate::ffi_util::error_message(err)));
+        }
+    }
+
     /// By default, RocksDB uses only one background thread for flush and
     /// compaction. Calling this function will set it up such that total of
     /// `total_threads` is used. Good value for `total_threads` is the number of
@@ -1290,6 +1351,7 @@ impl Default for WriteOptions {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use MemtableFactory;
     use Options;
 
@@ -1314,5 +1376,24 @@ mod tests {
             height: 4,
             branching_factor: 4,
         });
+    }
+
+    #[test]
+    fn test_set_options_from_map() {
+        let mut map = HashMap::new();
+
+        map.insert("max_open_files".to_string(), "100".to_string());
+
+        Options::from_map(&map).expect("from_map failed");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_invalid_option() {
+        let mut map = HashMap::new();
+
+        map.insert("bogus_option".to_string(), "100".to_string());
+
+        Options::from_map(&map).expect("from_map failed");
     }
 }
