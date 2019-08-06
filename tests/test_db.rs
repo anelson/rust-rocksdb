@@ -20,6 +20,7 @@ mod util;
 use libc::size_t;
 
 use rocksdb::{DBVector, Error, IteratorMode, Options, Snapshot, WriteBatch, DB};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::{mem, thread};
 use util::DBPath;
@@ -48,6 +49,31 @@ fn external() {
         assert!(r.unwrap().unwrap().to_utf8().unwrap() == "v1111");
         assert!(db.delete(b"k1").is_ok());
         assert!(db.get(b"k1").unwrap().is_none());
+    }
+}
+
+#[test]
+fn options_should_combine_db_and_cf() {
+    //First set some DB options, then set some CF options.  This should preserve the DB options
+    //not clobber them.
+    let options = Options::default();
+
+    let mut db_options = HashMap::new();
+    db_options.insert("create_if_missing", "true"); //without this the open call should fail
+
+    let mut cf_options = HashMap::new();
+    cf_options.insert("level_compaction_dynamic_level_bytes", "true");
+
+    let options = Options::default()
+        .set_db_options_from_map(&db_options)
+        .unwrap()
+        .set_cf_options_from_map(&cf_options)
+        .unwrap();
+
+    let path = DBPath::new("_rust_rocksdb_combined_db_and_cf_options");
+
+    {
+        let _db = DB::open(&options, &path).unwrap();
     }
 }
 

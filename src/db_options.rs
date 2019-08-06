@@ -299,11 +299,18 @@ impl Options {
                 cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", map_ptr as "const options_map*"] -> *mut ::libc::c_char as "const char*" {
                     //Confusingly, the `Options` class inherits from both `DBOptions` and
                     //`ColumnFamilyOptions`, which is why this seemingly-wrong code compiles
+                    const rocksdb::ColumnFamilyOptions& existing_cf_options = *static_cast<const rocksdb::ColumnFamilyOptions*>(options_ptr);
+                    auto new_db_options = rocksdb::DBOptions();
+
                     auto status = rocksdb::GetDBOptionsFromMap(*options_ptr,
                                                                *map_ptr,
-                                                               new_options_ptr);
+                                                               &new_db_options);
 
                     if (status.ok()) {
+                        //Create a new Options struct which is a combionation of the newly
+                        //populated DBOptions and the ColumnFamilyOptions that were already in the
+                        //old Options struct
+                        *new_options_ptr = rocksdb::Options(new_db_options, existing_cf_options);
                         return nullptr;
                     } else {
                         return strdup(status.getState());
@@ -343,12 +350,18 @@ impl Options {
                 cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", map_ptr as "const options_map*"] -> *mut ::libc::c_char as "const char*" {
                     //Confusingly, the `Options` class inherits from both `DBOptions` and
                     //`ColumnFamilyOptions`, which is why this seemingly-wrong code compiles
+                    const rocksdb::DBOptions& existing_db_options = *static_cast<const rocksdb::DBOptions*>(options_ptr);
+                    auto new_cf_options = rocksdb::ColumnFamilyOptions();
+
                     auto status = rocksdb::GetColumnFamilyOptionsFromMap(*options_ptr,
                                                                *map_ptr,
-                                                               new_options_ptr);
+                                                               &new_cf_options);
 
                     if (status.ok()) {
-                        return nullptr;
+                        //Create a new Options struct which is a combionation of the newly
+                        //populated ColumnFamilyOptions and the DBOptions that were already in the
+                        //old Options struct
+                        *new_options_ptr = rocksdb::Options(existing_db_options, new_cf_options);
                     } else {
                         return strdup(status.getState());
                     }
