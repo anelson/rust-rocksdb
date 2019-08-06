@@ -46,9 +46,27 @@ fn bindgen_rocksdb() {
 
 fn build_rocksdb() {
     let mut config = cc::Build::new();
-    config.include("rocksdb/include/");
-    config.include("rocksdb/");
-    config.include("rocksdb/third-party/gtest-1.7.0/fused-src/");
+
+    //Canonicalize the include paths into absolute paths
+    let include_paths: Vec<_> = [
+        "rocksdb/include",
+        "rocksdb",
+        "rocksdb/third-party/gtest-1.7.0/fused-src/",
+    ]
+    .iter()
+    .map(|include| {
+        fs::canonicalize(include).expect(&format!("Failed to canonicalize path {}", include))
+    })
+    .collect();
+
+    for include in include_paths.iter() {
+        config.include(include.as_path());
+    }
+
+    // Report the include paths via cargo so downstream crates can use them
+    let include_path = std::env::join_paths(include_paths.iter())
+        .expect("join_paths failed");
+    println!("cargo:include={}", include_path.to_str().expect("to_str failed"));
 
     if cfg!(feature = "snappy") {
         config.define("SNAPPY", Some("1"));
