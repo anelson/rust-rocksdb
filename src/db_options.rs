@@ -90,21 +90,21 @@ unsafe fn free_unordered_map(map_ptr: *const c_void) {
 
 /// Generalized helper for creating some arbitrary `Options`-like struct initialized with values
 /// from a map of name/value pairs.
-unsafe fn create_options_from_map<
+unsafe fn set_options_from_map<
     OptionT: Default,
     K: AsRef<str> + Into<Vec<u8>>,
     V: AsRef<str> + Into<Vec<u8>>,
-    F: FnOnce(&OptionT, &OptionT, *const c_void) -> *mut ::libc::c_char,
+    F: FnOnce(OptionT, &OptionT, *const c_void) -> *mut ::libc::c_char,
 >(
+    options: OptionT,
     map: &HashMap<K, V>,
     setter_func: F,
 ) -> Result<OptionT, crate::Error> {
-    let options = OptionT::default();
     let new_options = OptionT::default();
 
     let map_ptr = hashmap_to_stl_unordered_map(map);
 
-    let err = setter_func(&options, &new_options, map_ptr);
+    let err = setter_func(options, &new_options, map_ptr);
 
     free_unordered_map(map_ptr);
 
@@ -156,7 +156,7 @@ impl Drop for WriteOptions {
 }
 
 impl BlockBasedOptions {
-    /// Creates a new `BlockBasedOptions` structure populated with options obtained from a `HashMap`.
+    /// Populates a `BlockBasedOptions` structure with options obtained from a `HashMap`.
     ///
     /// This has the advantage of always accepting the latest options, no need to wait for them to
     /// be added to the RocksDB C bindings or to the `rust-rocksdb` wrapper.
@@ -169,14 +169,16 @@ impl BlockBasedOptions {
     ///
     /// let mut options = HashMap::new();
     /// options.insert("filter_policy", "bloomfilter:4:true");
-    /// options.insert("rate_limiter_bytes_per_sec", "1M");
-    /// let opt = BlockBasedOptions::from_map(&options).unwrap();
+    /// options.insert("cache_index_and_filter_blocks", "true");
+    /// let _opt = BlockBasedOptions::default().set_options_from_map(&options).unwrap();
     /// ```
-    pub fn from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+    pub fn set_options_from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+        self,
         map: &HashMap<K, V>,
     ) -> Result<BlockBasedOptions, crate::Error> {
         unsafe {
-            create_options_from_map::<BlockBasedOptions, _, _, _>(
+            set_options_from_map::<BlockBasedOptions, _, _, _>(
+                self,
                 map,
                 |options, new_options, map_ptr| {
                     let options_ptr = options.inner;
@@ -268,7 +270,7 @@ impl Default for BlockBasedOptions {
 }
 
 impl Options {
-    /// Creates a new `Options` structure populated with options obtained from a `HashMap`.
+    /// Populates a `Options` structure with database options obtained from a `HashMap`.
     ///
     /// This has the advantage of always accepting the latest options, no need to wait for them to
     /// be added to the RocksDB C bindings or to the `rust-rocksdb` wrapper.
@@ -280,19 +282,68 @@ impl Options {
     /// use rocksdb::Options;
     ///
     /// let mut options = HashMap::new();
-    /// options.insert("increase_parallelism", "3");
-    /// let opt = Options::from_map(&options).unwrap();
+    /// options.insert("allow_mmap_reads", "true");
+    /// options.insert("create_if_missing", "true");
+    /// let opt = Options::default();
+    /// let _opt = opt.set_db_options_from_map(&options).unwrap();
     /// ```
-    pub fn from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+    pub fn set_db_options_from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+        self,
         map: &HashMap<K, V>,
     ) -> Result<Options, crate::Error> {
         unsafe {
-            create_options_from_map::<Options, _, _, _>(map, |options, new_options, map_ptr| {
+            set_options_from_map::<Options, _, _, _>(self, map, |options, new_options, map_ptr| {
                 let options_ptr = options.inner;
                 let new_options_ptr = new_options.inner;
 
                 cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", map_ptr as "const options_map*"] -> *mut ::libc::c_char as "const char*" {
+                    //Confusingly, the `Options` class inherits from both `DBOptions` and
+                    //`ColumnFamilyOptions`, which is why this seemingly-wrong code compiles
                     auto status = rocksdb::GetDBOptionsFromMap(*options_ptr,
+                                                               *map_ptr,
+                                                               new_options_ptr);
+
+                    if (status.ok()) {
+                        return nullptr;
+                    } else {
+                        return strdup(status.getState());
+                    }
+                    return nullptr;
+                })
+            })
+        }
+    }
+
+    /// Populates a `Options` structure with column family options obtained from a `HashMap`.
+    ///
+    /// This has the advantage of always accepting the latest options, no need to wait for them to
+    /// be added to the RocksDB C bindings or to the `rust-rocksdb` wrapper.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use rocksdb::Options;
+    ///
+    /// let mut options = HashMap::new();
+    /// options.insert("report_bg_io_stats", "true");
+    /// options.insert("max_compaction_bytes", "1M");
+    /// let opt = Options::default();
+    /// let _opt = opt.set_cf_options_from_map(&options).unwrap();
+    /// ```
+    pub fn set_cf_options_from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+        self,
+        map: &HashMap<K, V>,
+    ) -> Result<Options, crate::Error> {
+        unsafe {
+            set_options_from_map::<Options, _, _, _>(self, map, |options, new_options, map_ptr| {
+                let options_ptr = options.inner;
+                let new_options_ptr = new_options.inner;
+
+                cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", map_ptr as "const options_map*"] -> *mut ::libc::c_char as "const char*" {
+                    //Confusingly, the `Options` class inherits from both `DBOptions` and
+                    //`ColumnFamilyOptions`, which is why this seemingly-wrong code compiles
+                    auto status = rocksdb::GetColumnFamilyOptionsFromMap(*options_ptr,
                                                                *map_ptr,
                                                                new_options_ptr);
 
@@ -1487,40 +1538,59 @@ mod tests {
 
     #[test]
     fn test_set_options_from_map() {
-        let mut map = HashMap::new();
+        let options = Options::default();
 
-        map.insert("max_open_files".to_string(), "100".to_string());
+        let mut db_options = HashMap::new();
+        db_options.insert("max_open_files", "100");
 
-        Options::from_map(&map).expect("from_map failed");
+        let mut cf_options = HashMap::new();
+        cf_options.insert("level_compaction_dynamic_level_bytes", "true");
+
+        let options = options.set_db_options_from_map(&db_options).unwrap();
+        let _options = options.set_cf_options_from_map(&cf_options).unwrap();
     }
 
     #[test]
     #[should_panic]
-    fn test_set_invalid_option() {
+    fn test_set_invalid_db_option() {
+        let options = Options::default();
         let mut map = HashMap::new();
 
-        map.insert("bogus_option".to_string(), "100".to_string());
+        map.insert("bogus_option", "100");
 
-        Options::from_map(&map).expect("from_map failed");
+        let _options = options.set_db_options_from_map(&map).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_invalid_cf_option() {
+        let options = Options::default();
+        let mut map = HashMap::new();
+
+        map.insert("bogus_option", "100");
+
+        let _options = options.set_cf_options_from_map(&map).unwrap();
     }
 
     #[test]
     fn test_set_block_based_options_from_map() {
+        let options = BlockBasedOptions::default();
         let mut map = HashMap::new();
 
         map.insert("filter_policy", "bloomfilter:4:true");
         map.insert("block_cache", "1M");
 
-        BlockBasedOptions::from_map(&map).expect("from_map failed");
+        let _options = options.set_options_from_map(&map).unwrap();
     }
 
     #[test]
     #[should_panic]
     fn test_set_invalid_block_based_option() {
+        let options = BlockBasedOptions::default();
         let mut map = HashMap::new();
 
-        map.insert("bogus_option".to_string(), "100".to_string());
+        map.insert("bogus_option", "100");
 
-        BlockBasedOptions::from_map(&map).expect("from_map failed");
+        let _options = options.set_options_from_map(&map).unwrap();
     }
 }
