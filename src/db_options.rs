@@ -31,6 +31,92 @@ use {
     FlushOptions, MemtableFactory, Options, PlainTableFactoryOptions, WriteOptions,
 };
 
+cpp! {{
+#include <unordered_map>
+#include <rocksdb/options.h>
+#include <rocksdb/convenience.h>
+
+typedef std::unordered_map<std::string, std::string> options_map;
+
+}}
+
+/// Internal helper which converts a `HashMap` of string name/value pairs into a C++
+/// `std::unordered_map` which can be used with the RocksDB convenience APIs for building options
+/// objects from such maps.
+///
+/// Returns a pointer to a std::unordered_map which must be freed with `free_unordered_map`.
+unsafe fn hashmap_to_stl_unordered_map<
+    K: AsRef<str> + Into<Vec<u8>>,
+    V: AsRef<str> + Into<Vec<u8>>,
+>(
+    map: &HashMap<K, V>,
+) -> *const c_void {
+    //Need to make the map into separate arrays of keys and values which will be easier
+    //to put into an STL unordered map.
+    let mut keys = Vec::<CString>::with_capacity(map.len());
+    let mut values = Vec::<CString>::with_capacity(map.len());
+
+    for (key, value) in map.iter() {
+        keys.push(CString::new(key.as_ref()).expect("invalid key"));
+        values.push(CString::new(value.as_ref()).expect("invalid value"));
+    }
+
+    let keys_ptrs: Vec<_> = keys.iter().map(|key| key.as_ptr()).collect();
+    let values_ptrs: Vec<_> = values.iter().map(|value| value.as_ptr()).collect();
+
+    let keys_ptr = keys_ptrs.as_ptr();
+    let values_ptr = values_ptrs.as_ptr();
+    let len = map.len();
+
+    let unordered_map_ptr = cpp!([keys_ptr as "const char**", values_ptr as "const char**", len as "size_t"] -> *const c_void as "const options_map*" {
+        auto map = new std::unordered_map<std::string, std::string>();
+
+        for (size_t i = 0; i < len; i++) {
+            map->insert(options_map::value_type(std::string(keys_ptr[i]), std::string(values_ptr[i])));
+        }
+
+        return map;
+    });
+
+    unordered_map_ptr
+}
+
+/// Frees a map previously allocated by `hashmap_to_stl_unordered_map`
+unsafe fn free_unordered_map(map_ptr: *const c_void) {
+    cpp!([map_ptr as "const options_map*"] -> () as "void" {
+        delete map_ptr;
+    });
+}
+
+/// Generalized helper for creating some arbitrary `Options`-like struct initialized with values
+/// from a map of name/value pairs.
+unsafe fn create_options_from_map<
+    OptionT: Default,
+    K: AsRef<str> + Into<Vec<u8>>,
+    V: AsRef<str> + Into<Vec<u8>>,
+    F: FnOnce(&OptionT, &OptionT, *const c_void) -> *mut ::libc::c_char,
+>(
+    map: &HashMap<K, V>,
+    setter_func: F,
+) -> Result<OptionT, crate::Error> {
+    let options = OptionT::default();
+    let new_options = OptionT::default();
+
+    let map_ptr = hashmap_to_stl_unordered_map(map);
+
+    let err = setter_func(&options, &new_options, map_ptr);
+
+    free_unordered_map(map_ptr);
+
+    if err.is_null() {
+        //Success
+        Ok(new_options)
+    } else {
+        //Failed miserably
+        return Err(crate::Error::new(crate::ffi_util::error_message(err)));
+    }
+}
+
 pub fn new_cache(capacity: size_t) -> *mut ffi::rocksdb_cache_t {
     unsafe { ffi::rocksdb_cache_create_lru(capacity) }
 }
@@ -70,6 +156,49 @@ impl Drop for WriteOptions {
 }
 
 impl BlockBasedOptions {
+    /// Creates a new `BlockBasedOptions` structure populated with options obtained from a `HashMap`.
+    ///
+    /// This has the advantage of always accepting the latest options, no need to wait for them to
+    /// be added to the RocksDB C bindings or to the `rust-rocksdb` wrapper.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use rocksdb::BlockBasedOptions;
+    ///
+    /// let mut options = HashMap::new();
+    /// options.insert("filter_policy", "bloomfilter:4:true");
+    /// options.insert("rate_limiter_bytes_per_sec", "1M");
+    /// let opt = BlockBasedOptions::from_map(&options).unwrap();
+    /// ```
+    pub fn from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
+        map: &HashMap<K, V>,
+    ) -> Result<BlockBasedOptions, crate::Error> {
+        unsafe {
+            create_options_from_map::<BlockBasedOptions, _, _, _>(
+                map,
+                |options, new_options, map_ptr| {
+                    let options_ptr = options.inner;
+                    let new_options_ptr = new_options.inner;
+
+                    cpp!([options_ptr as "const rocksdb::BlockBasedTableOptions*", new_options_ptr as "rocksdb::BlockBasedTableOptions*", map_ptr as "const options_map*"] -> *mut ::libc::c_char as "const char*" {
+                        auto status = rocksdb::GetBlockBasedTableOptionsFromMap(*options_ptr,
+                                                                   *map_ptr,
+                                                                   new_options_ptr);
+
+                        if (status.ok()) {
+                            return nullptr;
+                        } else {
+                            return strdup(status.getState());
+                        }
+                        return nullptr;
+                    })
+                },
+            )
+        }
+    }
+
     pub fn set_block_size(&mut self, size: usize) {
         unsafe {
             ffi::rocksdb_block_based_options_set_block_size(self.inner, size);
@@ -138,64 +267,43 @@ impl Default for BlockBasedOptions {
     }
 }
 
-cpp! {{
-            #include <rocksdb/options.h>
-            #include <rocksdb/convenience.h>
-}}
-
 impl Options {
+    /// Creates a new `Options` structure populated with options obtained from a `HashMap`.
+    ///
+    /// This has the advantage of always accepting the latest options, no need to wait for them to
+    /// be added to the RocksDB C bindings or to the `rust-rocksdb` wrapper.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use rocksdb::Options;
+    ///
+    /// let mut options = HashMap::new();
+    /// options.insert("increase_parallelism", "3");
+    /// let opt = Options::from_map(&options).unwrap();
+    /// ```
     pub fn from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
         map: &HashMap<K, V>,
     ) -> Result<Options, crate::Error> {
-        //Need to make the map into separate arrays of keys and values which will be easier
-        //to put into an STL unordered map.
-        let mut keys = Vec::<CString>::with_capacity(map.len());
-        let mut values = Vec::<CString>::with_capacity(map.len());
+        unsafe {
+            create_options_from_map::<Options, _, _, _>(map, |options, new_options, map_ptr| {
+                let options_ptr = options.inner;
+                let new_options_ptr = new_options.inner;
 
-        for (key, value) in map.iter() {
-            keys.push(CString::new(key.as_ref()).expect("invalid key"));
-            values.push(CString::new(value.as_ref()).expect("invalid value"));
-        }
+                cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", map_ptr as "const options_map*"] -> *mut ::libc::c_char as "const char*" {
+                    auto status = rocksdb::GetDBOptionsFromMap(*options_ptr,
+                                                               *map_ptr,
+                                                               new_options_ptr);
 
-        let keys_ptrs: Vec<_> = keys.iter().map(|key| key.as_ptr()).collect();
-        let values_ptrs: Vec<_> = values.iter().map(|value| value.as_ptr()).collect();
-
-        let options = Options::default();
-        let options_ptr = options.inner;
-        let new_options = Options::default();
-        let new_options_ptr = new_options.inner;
-
-        let keys_ptr = keys_ptrs.as_ptr();
-        let values_ptr = values_ptrs.as_ptr();
-        let len = map.len();
-
-        let err = unsafe {
-            cpp!([options_ptr as "const rocksdb::Options*", new_options_ptr as "rocksdb::Options*", keys_ptr as "const char**", values_ptr as "const char**", len as "size_t"] -> *mut ::libc::c_char as "const char*" {
-                auto map = std::unordered_map<std::string, std::string>();
-
-                for (size_t i = 0; i < len; i++) {
-                    map.insert(std::pair<std::string, std::string>(std::string(keys_ptr[i]), std::string(values_ptr[i])));
-                }
-
-                auto status = rocksdb::GetDBOptionsFromMap(*options_ptr,
-                                                           map,
-                                                           new_options_ptr);
-
-                if (status.ok()) {
+                    if (status.ok()) {
+                        return nullptr;
+                    } else {
+                        return strdup(status.getState());
+                    }
                     return nullptr;
-                } else {
-                    return strdup(status.getState());
-                }
-                return nullptr;
+                })
             })
-        };
-
-        if err.is_null() {
-            //Success
-            Ok(new_options)
-        } else {
-            //Failed miserably
-            return Err(crate::Error::new(crate::ffi_util::error_message(err)));
         }
     }
 
@@ -1351,9 +1459,8 @@ impl Default for WriteOptions {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::collections::HashMap;
-    use MemtableFactory;
-    use Options;
 
     #[test]
     fn test_enable_statistics() {
@@ -1395,5 +1502,25 @@ mod tests {
         map.insert("bogus_option".to_string(), "100".to_string());
 
         Options::from_map(&map).expect("from_map failed");
+    }
+
+    #[test]
+    fn test_set_block_based_options_from_map() {
+        let mut map = HashMap::new();
+
+        map.insert("filter_policy", "bloomfilter:4:true");
+        map.insert("block_cache", "1M");
+
+        BlockBasedOptions::from_map(&map).expect("from_map failed");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_invalid_block_based_option() {
+        let mut map = HashMap::new();
+
+        map.insert("bogus_option".to_string(), "100".to_string());
+
+        BlockBasedOptions::from_map(&map).expect("from_map failed");
     }
 }
