@@ -89,7 +89,7 @@ use std::sync::{Arc, RwLock};
 ///
 /// See crate level documentation for a simple usage example.
 pub struct DB {
-    pub(crate) inner: *mut ffi::rocksdb_t,
+    inner: *mut ffi::rocksdb_t,
     cfs: Arc<RwLock<BTreeMap<String, *mut ffi::rocksdb_column_family_handle_t>>>,
     path: PathBuf,
 }
