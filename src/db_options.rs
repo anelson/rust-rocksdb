@@ -94,9 +94,9 @@ unsafe fn set_options_from_map<
     OptionT: Default,
     K: AsRef<str> + Into<Vec<u8>>,
     V: AsRef<str> + Into<Vec<u8>>,
-    F: FnOnce(OptionT, &OptionT, *const c_void) -> *mut ::libc::c_char,
+    F: FnOnce(&OptionT, &OptionT, *const c_void) -> *mut ::libc::c_char,
 >(
-    options: OptionT,
+    options: &OptionT,
     map: &HashMap<K, V>,
     setter_func: F,
 ) -> Result<OptionT, crate::Error> {
@@ -104,7 +104,7 @@ unsafe fn set_options_from_map<
 
     let map_ptr = hashmap_to_stl_unordered_map(map);
 
-    let err = setter_func(options, &new_options, map_ptr);
+    let err = setter_func(&options, &new_options, map_ptr);
 
     free_unordered_map(map_ptr);
 
@@ -173,7 +173,7 @@ impl BlockBasedOptions {
     /// let _opt = BlockBasedOptions::default().set_options_from_map(&options).unwrap();
     /// ```
     pub fn set_options_from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
-        self,
+        &self,
         map: &HashMap<K, V>,
     ) -> Result<BlockBasedOptions, crate::Error> {
         unsafe {
@@ -288,7 +288,7 @@ impl Options {
     /// let _opt = opt.set_db_options_from_map(&options).unwrap();
     /// ```
     pub fn set_db_options_from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
-        self,
+        &self,
         map: &HashMap<K, V>,
     ) -> Result<Options, crate::Error> {
         unsafe {
@@ -339,7 +339,7 @@ impl Options {
     /// let _opt = opt.set_cf_options_from_map(&options).unwrap();
     /// ```
     pub fn set_cf_options_from_map<K: AsRef<str> + Into<Vec<u8>>, V: AsRef<str> + Into<Vec<u8>>>(
-        self,
+        &self,
         map: &HashMap<K, V>,
     ) -> Result<Options, crate::Error> {
         unsafe {
