@@ -12,11 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-use std::ffi::{CStr, CString};
-use std::mem;
-use std::path::Path;
-
 // In the C++ source file which the cpp macro will generate make sure the relevant includes are
 // present
 cpp! {{
