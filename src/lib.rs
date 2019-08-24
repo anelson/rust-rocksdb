@@ -55,7 +55,7 @@
 //!
 
 // Needed to support the cpp! macro
-#![recursion_limit="128"]
+#![recursion_limit="256"]
 
 extern crate libc;
 extern crate librocksdb_sys as ffi;
@@ -72,6 +72,7 @@ pub mod compaction_filter;
 mod comparator;
 mod db;
 mod db_options;
+mod logging;
 pub mod merge_operator;
 mod slice_transform;
 
@@ -80,6 +81,7 @@ pub use db::{
     DBCompactionStyle, DBCompressionType, DBIterator, DBPinnableSlice, DBRawIterator,
     DBRecoveryMode, DBVector, Direction, IteratorMode, ReadOptions, Snapshot, WriteBatch,
 };
+pub use logging::RocksDbLogger;
 
 pub use slice_transform::SliceTransform;
 

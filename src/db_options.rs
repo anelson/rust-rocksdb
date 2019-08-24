@@ -22,6 +22,7 @@ use libc::{self, c_int, c_uchar, c_uint, c_void, size_t, uint64_t};
 use compaction_filter::{self, filter_callback, CompactionFilterCallback, CompactionFilterFn};
 use comparator::{self, ComparatorCallback, CompareFn};
 use ffi;
+use logging;
 use merge_operator::{
     self, full_merge_callback, partial_merge_callback, MergeFn, MergeOperatorCallback,
 };
@@ -31,6 +32,8 @@ use {
     FlushOptions, MemtableFactory, Options, PlainTableFactoryOptions, WriteOptions,
 };
 
+// In the C++ source file which the cpp macro will generate make sure the relevant includes are
+// present
 cpp! {{
 #include <unordered_map>
 #include <rocksdb/options.h>
@@ -367,6 +370,32 @@ impl Options {
                     }
                     return nullptr;
                 })
+            })
+        }
+    }
+
+    /// Sets a log level and logger implementation using a Rust trait.
+    ///
+    /// The specified `level` is the minimum level that will be logged.  Log events below this
+    /// level will be skipped at the source level and thus incur almost no overhead.  Log events at
+    /// this level or above will be passed to the logging trait.
+    pub fn set_logger(&mut self, min_level: log::Level, logger: impl logging::RocksDbLogger) {
+        //Logger must be boxed to transfer ownership to the C++ code
+        let logger: Box<logging::CppLoggerWrapper> =
+            Box::new(logging::CppLoggerWrapper::new(logger));
+
+        let options_ptr = self.inner;
+        let boxed_logger = Box::into_raw(logger);
+        let rocksdb_level: u8 = match min_level {
+            log::Level::Debug | log::Level::Trace => 0,
+            log::Level::Info => 1,
+            log::Level::Warn => 2,
+            log::Level::Error => 3,
+        };
+
+        unsafe {
+            cpp!([options_ptr as "rocksdb::Options*", boxed_logger as "void*", rocksdb_level as "rocksdb::InfoLogLevel"] {
+               options_ptr->info_log = std::shared_ptr<Logger>(new RustLogger(rocksdb_level, boxed_logger));
             })
         }
     }

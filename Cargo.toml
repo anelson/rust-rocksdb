@@ -27,6 +27,7 @@ bzip2 = ["librocksdb-sys/bzip2"]
 libc = "0.2"
 librocksdb-sys = { path = "librocksdb-sys", version = "6.1.2" }
 cpp = "0.5"
+log = "0.4"
 
 [build-dependencies]
 cpp_build = "0.5"
