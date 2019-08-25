@@ -186,5 +186,10 @@ mod tests {
         //There should be messages logged as a result of all this
         let results: &Vec<String> = &messages.lock().unwrap();
         assert_ne!(Vec::<String>::new(), *results);
+
+        assert!(results.iter().any(|msg: &String| msg.contains("[db/version_set.cc:")),
+            "The messages did not contain a line that is always present at DB startup: \n{}",
+            results.join("\n")
+            );
     }
 }

@@ -55,7 +55,7 @@
 //!
 
 // Needed to support the cpp! macro
-#![recursion_limit="256"]
+#![recursion_limit="512"]
 
 extern crate libc;
 extern crate librocksdb_sys as ffi;

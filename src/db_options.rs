@@ -38,6 +38,7 @@ cpp! {{
 #include <unordered_map>
 #include <rocksdb/options.h>
 #include <rocksdb/convenience.h>
+#include <util/stderr_logger.h>
 
 typedef std::unordered_map<std::string, std::string> options_map;
 
@@ -396,6 +397,7 @@ impl Options {
         unsafe {
             cpp!([options_ptr as "rocksdb::Options*", boxed_logger as "void*", rocksdb_level as "rocksdb::InfoLogLevel"] {
                options_ptr->info_log = std::shared_ptr<Logger>(new RustLogger(rocksdb_level, boxed_logger));
+               //options_ptr->info_log = std::shared_ptr<Logger>(new rocksdb::StderrLogger(rocksdb_level));
             })
         }
     }
