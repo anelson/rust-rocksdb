@@ -188,7 +188,17 @@ fn build_rocksdb() {
         //otherwise the log output is corrupted.
         //
         //For the same reason, include paths are canonicalized above with `canonically_include`
-        let file = fs::canonicalize(&file).expect(&format!("Failed to canonicalize source file path {}", file));
+
+        //UPDATE: Unfortunately this doens't work either.  `config.file()` below needs to determine
+        //a suitable name for the `.o` file that gets produced when compiling this file.  How does
+        //it do that?  Well, if `file` is relative then it's easy: it just appends `file` to the
+        //dest dir and adds `.o  But if `file` is absolute, then it appends only the file NAME to
+        //the dest dir.  That would be find except the RocksDB code has multiple files with the
+        //name `format.cc` in different directories, and this means they clobber eachother on
+        //output leading to linker errors that are hard to debug.
+        //Need to fix this later, but for now this is disabled and logging will continue to be
+        //broken
+        //let file = fs::canonicalize(&file).expect(&format!("Failed to canonicalize source file path {}", file));
         config.file(&file);
     }
 
